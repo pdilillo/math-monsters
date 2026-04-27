@@ -68,7 +68,7 @@ export class TutorialScene extends Phaser.Scene {
   private spawnPractice(): void {
     const centerX = this.scale.width / 2;
     const y = 300;
-    this.practiceMonster = this.physics.add.sprite(centerX - 150, y, 'monster');
+    this.practiceMonster = this.physics.add.sprite(centerX - 150, y, 'monster-idle');
     this.practiceTarget = this.add.text(centerX + 120, y - 18, '12', {
       fontSize: '44px',
       color: '#fef08a',

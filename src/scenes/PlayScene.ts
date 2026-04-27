@@ -15,6 +15,7 @@ interface PlaySceneData {
 
 interface AnswerTile {
   bg: Phaser.Physics.Arcade.Image;
+  outline: Phaser.GameObjects.Image;
   text: Phaser.GameObjects.Text;
   value: number;
   eaten: boolean;
@@ -32,12 +33,14 @@ export class PlayScene extends Phaser.Scene {
   private timerEvent?: Phaser.Time.TimerEvent;
   private timeRemaining = 0;
   private solvedAnswers = new Set<number>();
+  private activeProblem?: { prompt: string; answer: number };
 
   constructor() {
     super('PlayScene');
   }
 
   create(data: PlaySceneData): void {
+    this.resetLevelState();
     const levelConfig = LEVELS[Math.min(data.levelIndex, LEVELS.length - 1)];
     const problems = generateProblems(data.mode, levelConfig.problemCount, levelConfig.minFactor, levelConfig.maxFactor);
     const targetAnswers = [...new Set(problems.map((problem) => problem.answer))];
@@ -62,8 +65,18 @@ export class PlayScene extends Phaser.Scene {
     this.spawnMonster();
     this.bindControls(levelConfig);
     this.startTimer();
+    this.pickNextProblem();
     this.refreshHud();
-    announce(`Level ${levelConfig.level}. Eat answer and press space to select.`);
+    announce(`Level ${levelConfig.level}. Eat the answer and press space to select.`);
+  }
+
+  private resetLevelState(): void {
+    this.tiles = [];
+    this.tileByCell.clear();
+    this.currentCell = { row: 0, col: 0 };
+    this.lastMoveMs = 0;
+    this.solvedAnswers.clear();
+    this.activeProblem = undefined;
   }
 
   private buildBoard(levelConfig: LevelConfig, targetAnswers: number[]): void {
@@ -78,9 +91,10 @@ export class PlayScene extends Phaser.Scene {
       const col = index % levelConfig.cols;
       const x = startX + col * tileSize;
       const y = startY + row * tileSize;
-      const bg = this.physics.add.image(x, y, 'tile').setImmovable(true);
-      const text = this.add.text(x, y, String(value), { fontSize: '28px', color: '#f8fafc' }).setOrigin(0.5);
-      const tile: AnswerTile = { bg, text, value, eaten: false };
+      const bg = this.physics.add.image(x, y, 'tile').setImmovable(true).setDepth(0);
+      const outline = this.add.image(x, y, 'tile-outline').setDepth(0.8);
+      const text = this.add.text(x, y, String(value), { fontSize: '28px', color: '#f8fafc' }).setOrigin(0.5).setDepth(2);
+      const tile: AnswerTile = { bg, outline, text, value, eaten: false };
       this.tiles.push(tile);
       this.tileByCell.set(`${row}-${col}`, tile);
     });
@@ -91,7 +105,8 @@ export class PlayScene extends Phaser.Scene {
     if (!tile) {
       throw new Error('Missing starting tile');
     }
-    this.monster = this.physics.add.sprite(tile.bg.x, tile.bg.y, 'monster');
+    this.monster = this.physics.add.sprite(tile.bg.x, tile.bg.y, 'monster-idle');
+    this.monster.setDepth(1);
   }
 
   private bindControls(levelConfig: LevelConfig): void {
@@ -125,7 +140,11 @@ export class PlayScene extends Phaser.Scene {
 
   private highlightCurrentTile(): void {
     const key = `${this.currentCell.row}-${this.currentCell.col}`;
-    this.tiles.forEach((tile) => tile.bg.setTint(tile === this.tileByCell.get(key) ? 0x38bdf8 : 0xffffff));
+    this.tiles.forEach((tile) => {
+      const isCurrent = tile === this.tileByCell.get(key);
+      tile.bg.setTint(isCurrent ? 0x38bdf8 : 0xffffff);
+      tile.outline.setTint(isCurrent ? 0x67e8f9 : 0xffffff);
+    });
   }
 
   private eatCurrentTile(): void {
@@ -133,20 +152,22 @@ export class PlayScene extends Phaser.Scene {
     if (!tile || tile.eaten) {
       return;
     }
+    this.monster.play('monster-bite', true);
 
-    if (this.session.targetAnswers.includes(tile.value)) {
+    if (this.activeProblem && tile.value === this.activeProblem.answer) {
       tile.eaten = true;
-      tile.bg.setVisible(false);
+      tile.bg.setAlpha(0.2);
       tile.text.setVisible(false);
       this.solvedAnswers.add(tile.value);
       this.session.score += scoreForCorrectAnswer(this.session.levelConfig.level);
       announce(`Correct! ${tile.value} eaten.`);
       this.flashMonster(0x22c55e);
+      this.pickNextProblem();
     } else {
       this.session.wrongAttempts += 1;
       this.session.score = Math.max(0, this.session.score - penaltyForWrongAnswer());
       this.timeRemaining = Math.max(0, this.timeRemaining - 2);
-      announce(`Not a target answer. Try again.`);
+      announce('Wrong answer. Try again.');
       this.flashMonster(0xfb7185);
     }
 
@@ -180,10 +201,18 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private refreshHud(): void {
-    const unresolved = this.session.problems.filter((p) => !this.solvedAnswers.has(p.answer));
-    const prompts = unresolved.slice(0, 3).map((p) => p.prompt).join('   ');
-    this.promptText.setText(`Eat answers for: ${prompts || 'All done!'}`);
+    this.promptText.setText(`Solve: ${this.activeProblem?.prompt ?? 'All done!'}`);
     this.hud.setText(`Mode: ${this.session.mode}   Level: ${this.session.levelConfig.level}   Score: ${this.session.score}   Time: ${this.timeRemaining}`);
+  }
+
+  private pickNextProblem(): void {
+    const remainingAnswers = new Set(
+      this.tiles.filter((tile) => !tile.eaten).map((tile) => tile.value),
+    );
+    const unresolved = this.session.problems.filter(
+      (problem) => !this.solvedAnswers.has(problem.answer) && remainingAnswers.has(problem.answer),
+    );
+    this.activeProblem = unresolved[0];
   }
 
   private checkLevelOutcome(): void {
